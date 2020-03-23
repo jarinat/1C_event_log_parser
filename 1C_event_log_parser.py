@@ -11,74 +11,23 @@ import argparse
 ##################################################################################
 
 
-def get_args():
+def get_settings_from_file():
+    settings_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "1C_event_log_parser_settings.json")
     
-    parser = argparse.ArgumentParser(description = 'Парсинг журнала регистрации 1С.\
-                                                    Журнал должен быть в старом формате (lgp)\
-                                                    и разбит по дням.')
-
-    parser.add_argument(
-        '--log_path',
-        type=str,
-        default=os.getcwd(),
-        help='Каталог ресположения журнала регистрации.\
-            По-умолчанию - текущий рабочий каталог.')
-
-
-    parser.add_argument(
-        '--log_date',
-        type=str,
-        default='',
-        help='Регулярное выражение - логи за какую дату анализировать.\
-            Формат даты - YYYYMMDDHH\
-            Допустимые форматы - YYYYMM, YYYYMMDD, YYYYMMDDHH.\
-            По-умолчанию - пустая дата')
-            
-    parser.add_argument(
-        '--periodic',
-        type=str,
-        default='False',
-        help='Периодическая обработка журанала.\
-            Если True, тогда создается файл настроек,\
-            в котором хранится дата последнего запуска скрипта\
-            и прочие настройки.\
-            По-умолчанию - False')
-            
-    parser.add_argument(
-        '--level',
-        type=str,
-        default='1',
-        help='Минимальный уровень обрабатываемых событий.\
-            1 - все события,\
-            2 - Замечания, Предупреждения, Ошибки,\
-            3 - Предупреждения, Ошибки,\
-            4 - Ошибки.\
-            в котором хранится дата последнего запуска скрипта\
-            и прочие настройки.\
-            По-умолчанию - 1')
-
-
-    return parser.parse_args()
-
-
-def update_params_from_file(log_path, log_date, level):
-    
-    settings_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "1C_JR_analyze_settings.json")
-    
-    if os.path.exists(settings_path):
+    if not os.path.exists(settings_path):
+        settings = {
+            'log_path': '.',
+            'level': 1,
+            'last_parsed_date': '',
+            'last_parsed_message': ''
+        }
+        with open(settings_path, 'w') as outfile:
+            json.dump(settings, outfile)
+    else:
         with open(settings_path) as json_file:
-            data = json.load(json_file)
+            settings = json.load(json_file)
             
-            if 'log_path' in data:
-                log_path = data['log_path']
-                
-            if 'last_parsing_date' in data:
-                last_parsing_date = data['last_parsing_date']
-                
-            if 'level' in data:
-                level = data['level']
-                
-                
+    return settings
     
 
 ##################################################################################
@@ -186,10 +135,25 @@ def prepare_log_dict():
     add_params_from_file()
     add_predefined_params()
 
+
 ##################################################################################
 ################## Чтение логов ##################################################
 ##################################################################################
 
+def update_settings_file(int_file_name, full_line):
+    
+    setting_to_save = {
+        'log_path': log_path,
+        'level': level,
+        'last_parsed_date': int_file_name,
+        'last_parsed_message': full_line
+    }
+    
+    settings_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "1C_event_log_parser_settings.json")
+    with open(settings_path, 'w') as outfile:
+        json.dump(setting_to_save, outfile)
+        
+        
 
 def get_log_event_dict(log_event):
 
@@ -219,7 +183,7 @@ def get_log_event_dict(log_event):
     return log_event_dict
 
 
-def read_log_file(file_path):
+def read_log_file(file_path, int_file_name, last_parsed_message):
 
     dict_file = open(file_path, encoding="utf8")
     
@@ -240,11 +204,25 @@ def read_log_file(file_path):
         if next_event_regex.search(cur_line) is not None and full_line != '':
 
             #print(full_line)
+            
+            if last_parsed_message != '' and full_line != last_parsed_message:
+                full_line = cur_line
+                continue
+            elif last_parsed_message != '' and full_line == last_parsed_message:
+                last_parsed_message = ''
+                full_line = cur_line
+                continue
+            
             log_event = log_event_regex.search(full_line)
 
             if log_event is not None:
                 log_event_dict = get_log_event_dict(log_event)
+                
                 print(json.dumps(log_event_dict))
+                
+                # TODO: запись в файл выполняется очень долго
+                # необоходимо исправить!!!
+                update_settings_file(int_file_name, full_line)
             
                 
             full_line = cur_line
@@ -254,7 +232,7 @@ def read_log_file(file_path):
             full_line = full_line + cur_line
             
 
-def read_logs_from_files():
+def read_logs_from_files(last_parsed_message):
 
     folder = []
 
@@ -262,14 +240,22 @@ def read_logs_from_files():
         folder.append(i)
         
 
-    log_file_regex = re.compile(r'%s\.lgp' % get_date_to_regex(False))
+    log_file_regex = re.compile(r'(\d{14})\.lgp')
 
 
     for address, dirs, files in folder:
         for file in files:
             file_path = os.path.join(address, file)
-            if log_file_regex.search(file_path) is not None:
-                read_log_file(file_path)
+            log_file_descr = log_file_regex.search(file_path)
+            
+            if log_file_descr is not None:
+                int_file_name = int(log_file_descr.group(1))
+                
+                if (last_parsed_date != '' and int_file_name == int(last_parsed_date)) or last_parsed_date == '':
+                    read_log_file(file_path, int_file_name, last_parsed_message)
+                elif last_parsed_date != '' and int_file_name > int(last_parsed_date):
+                    last_parsed_message = ''
+                    read_log_file(file_path, int_file_name, last_parsed_message)
 
 ##################################################################################
 ################## Вспомогательные функции #######################################
@@ -315,17 +301,14 @@ def get_date_to_regex(for_event):
 
 ##################################################################################
 
-#args = get_args()
+print(datetime.datetime.now())
 
+settings = get_settings_from_file()
 
-args = get_args_from_file()
-
-
-log_path = args.log_path
-log_date = args.log_date
-level = args.level
-if args.periodic.upper() == 'TRUE':
-    update_params_from_file(log_path, log_date, level)
+log_path = settings['log_path']
+last_parsed_date = settings['last_parsed_date']
+last_parsed_message = settings['last_parsed_message']
+level = settings['level']
 
 
 log_dict = {}
@@ -336,32 +319,25 @@ log_dict_three_params_regex = re.compile(r'\{(\d+),"?([^",]+)"?,(\d+)\}')
 
 
 prepare_log_dict()
+
+print(datetime.datetime.now())
         
 log_event_regex = re.compile(r'''\{
-                             (%s),([NURC]),\n                           # 20200316095741,N,
+                             (\d{14}),([NURC]),\n                           # 20200316095741,N,
                              (\{[\w\d]+,[\w\d]+\}),                         # {0,0} или {24387918c7a90,9f1b} и т.п.
-                             (\d+),(\d+),(\d+),(\d+),(\d+),([%s]),        # 3,4,2,2,6,I,
+                             (\d+),(\d+),(\d+),(\d+),(\d+),([%s]),          # 3,4,2,2,6,I,
                              "((?:(?!(?:",\d+,\n\{))(?:.|\n))*)",           # комментарий в кавычках за которым следует ,\d+,\n\{
                              (\d+),\n
                              (\{"\w"(?:(?!(?:\},"))(?:.|\n))*\}),           # {"U"} или {"R",178:966d3ca82a232bfc11ea674703f56a8d} и т.п. за которым следует ,"
                              "((?:(?!(?:",\d+,\d+,\d+,\d+,\d+,\n))(?:.|\n))*)",         # представление объекта в кавычках, за которым следует 2,14,0,3,0, или чтото подобное
                              (\d+),(\d+),(\d+),(\d+),(\d+),\n               # 2,14,0,3,0,\n
                              \{\d\}\n\}
-                             ''' % (get_date_to_regex(True), get_level_to_regex()), re.VERBOSE)
+                             ''' % get_level_to_regex(), re.VERBOSE)
 
 
-next_event_regex = re.compile(r'\d{12},[NURC],\n')
+next_event_regex = re.compile(r'\d{14},[NURC],\n')
 
 
-#read_logs_from_files()
+read_logs_from_files(last_parsed_message)
 
-
-
-
-
-
-
-
-
-
-
+print(datetime.datetime.now())
